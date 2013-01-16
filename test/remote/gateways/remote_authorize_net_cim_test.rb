@@ -11,18 +11,18 @@ class AuthorizeNetCimTest < Test::Unit::TestCase
     @payment = {
       :credit_card => @credit_card
     }
-    @profile = { 
+    @profile = {
       :merchant_customer_id => 'Up to 20 chars', # Optional
       :description => 'Up to 255 Characters', # Optional
       :email => 'Up to 255 Characters', # Optional
       :payment_profiles => { # Optional
         :customer_type => 'individual', # Optional
-        :bill_to => @address,
+        :bill_to => address,
         :payment => @payment
       },
       :ship_to_list => {
-        :first_name => 'John', 
-        :last_name => 'Doe', 
+        :first_name => 'John',
+        :last_name => 'Doe',
         :company => 'Widgets, Inc',
         :address1 => '1234 Fake Street',
         :city => 'Anytown',
@@ -78,6 +78,9 @@ class AuthorizeNetCimTest < Test::Unit::TestCase
     assert_equal 'new email address', response.params['profile']['email']
   end
 
+  # NOTE - prior_auth_capture should be used to complete an auth_only request
+  # (not capture_only as that will leak the authorization), so don't use this
+  # test as a template.
   def test_successful_create_customer_profile_transaction_auth_only_and_then_capture_only_requests
     assert response = @gateway.create_customer_profile(@options)
     @customer_profile_id = response.authorization
@@ -96,7 +99,7 @@ class AuthorizeNetCimTest < Test::Unit::TestCase
 
     assert response.test?
     assert_success response
-    assert_nil response.authorization
+    assert_equal response.authorization, response.params['direct_response']['transaction_id']
     assert_equal "This transaction has been approved.", response.params['direct_response']['message']
     assert response.params['direct_response']['approval_code'] =~ /\w{6}/
     assert_equal "auth_only", response.params['direct_response']['transaction_type']
@@ -119,7 +122,7 @@ class AuthorizeNetCimTest < Test::Unit::TestCase
 
     assert response.test?
     assert_success response
-    assert_nil response.authorization
+    assert_equal response.authorization, response.params['direct_response']['transaction_id']
     assert_equal "This transaction has been approved.", response.params['direct_response']['message']
     assert_equal approval_code, response.params['direct_response']['approval_code']
     assert_equal "capture_only", response.params['direct_response']['transaction_type']
@@ -143,13 +146,14 @@ class AuthorizeNetCimTest < Test::Unit::TestCase
           :description => 'Test Order Description',
           :purchase_order_number => '4321'
         },
+        :card_code => '900', # authorize.net says this is a matching CVV
         :amount => @amount
       }
     )
 
     assert response.test?
     assert_success response
-    assert_nil response.authorization
+    assert_equal response.authorization, response.params['direct_response']['transaction_id']
     assert_equal "This transaction has been approved.", response.params['direct_response']['message']
     assert response.params['direct_response']['approval_code'] =~ /\w{6}/
     assert_equal "auth_capture", response.params['direct_response']['transaction_type']
@@ -158,7 +162,7 @@ class AuthorizeNetCimTest < Test::Unit::TestCase
     assert_equal response.params['direct_response']['order_description'], 'Test Order Description'
     assert_equal response.params['direct_response']['purchase_order_number'], '4321'
   end
-  
+
   def test_successful_create_customer_payment_profile_request
     payment_profile = @options[:profile].delete(:payment_profiles)
     assert response = @gateway.create_customer_profile(@options)
@@ -261,7 +265,7 @@ class AuthorizeNetCimTest < Test::Unit::TestCase
     assert_nil response.authorization
     assert customer_payment_profile_id = response.params['customer_payment_profile_id']
     assert customer_payment_profile_id =~ /\d+/, "The customerPaymentProfileId should be numeric. It was #{customer_payment_profile_id}"
-    
+
     assert response = @gateway.get_customer_profile(:customer_profile_id => @customer_profile_id)
     assert_equal 2, response.params['profile']['payment_profiles'].size
     assert_equal 'XXXX4242', response.params['profile']['payment_profiles'][0]['payment']['credit_card']['card_number']
@@ -390,7 +394,7 @@ class AuthorizeNetCimTest < Test::Unit::TestCase
     # Show that fields that were left out of the update were cleared
     assert_nil response.params['payment_profile']['customer_type']
   end
-  
+
   def test_successful_update_customer_shipping_address_request
     # Create a new Customer Profile with Shipping Address
     assert response = @gateway.create_customer_profile(@options)
@@ -437,7 +441,7 @@ class AuthorizeNetCimTest < Test::Unit::TestCase
     assert_nil response.params['address']['phone_number']
   end
 
-  def test_successful_validate_customer_payment_profile_request
+  def test_successful_validate_customer_payment_profile_request_live
     assert response = @gateway.create_customer_profile(@options)
     @customer_profile_id = response.authorization
 
@@ -454,7 +458,254 @@ class AuthorizeNetCimTest < Test::Unit::TestCase
 
     assert response.test?
     assert_success response
-    assert_nil response.authorization
+    assert_equal response.authorization, response.params['direct_response']['transaction_id']
     assert_equal "This transaction has been approved.", response.params['direct_response']['message']
   end
+
+  def test_validate_customer_payment_profile_request_live_requires_billing_address
+    @options[:profile][:payment_profiles].delete(:bill_to)
+    assert response = @gateway.create_customer_profile(@options)
+    @customer_profile_id = response.authorization
+
+    assert response = @gateway.get_customer_profile(:customer_profile_id => @customer_profile_id)
+    assert @customer_payment_profile_id = response.params['profile']['payment_profiles']['customer_payment_profile_id']
+    assert @customer_address_id = response.params['profile']['ship_to_list']['customer_address_id']
+
+    assert response = @gateway.validate_customer_payment_profile(
+      :customer_profile_id => @customer_profile_id,
+      :customer_payment_profile_id => @customer_payment_profile_id,
+      :customer_address_id => @customer_address_id,
+      :validation_mode => :live
+    )
+
+    assert response.test?
+    assert_failure response
+    assert_equal "There is one or more missing or invalid required fields.", response.message
+  end
+
+  def test_validate_customer_payment_profile_request_old_does_not_require_billing_address
+    @options[:profile][:payment_profiles].delete(:bill_to)
+    assert response = @gateway.create_customer_profile(@options)
+    @customer_profile_id = response.authorization
+
+    assert response = @gateway.get_customer_profile(:customer_profile_id => @customer_profile_id)
+    assert @customer_payment_profile_id = response.params['profile']['payment_profiles']['customer_payment_profile_id']
+    assert @customer_address_id = response.params['profile']['ship_to_list']['customer_address_id']
+
+    assert response = @gateway.validate_customer_payment_profile(
+      :customer_profile_id => @customer_profile_id,
+      :customer_payment_profile_id => @customer_payment_profile_id,
+      :customer_address_id => @customer_address_id,
+      :validation_mode => :old
+    )
+
+    assert response.test?
+    assert_success response
+    assert_equal "Successful.", response.message
+  end
+
+  def test_should_create_customer_profile_transaction_auth_capture_and_then_void_request
+    response = get_and_validate_auth_capture_response
+
+    assert response = @gateway.create_customer_profile_transaction_for_void(
+      :transaction => {
+        :type => :void,
+        :trans_id => response.params['direct_response']['transaction_id']
+      }
+    )
+    assert_instance_of Response, response
+    assert_success response
+    assert_equal response.authorization, response.params['direct_response']['transaction_id']
+    assert_equal 'This transaction has been approved.', response.params['direct_response']['message']
+  end
+
+  def test_should_create_customer_profile_transaction_auth_capture_and_then_refund_using_profile_ids_request
+    response = get_and_validate_auth_capture_response
+
+    assert response = @gateway.create_customer_profile_transaction(
+      :transaction => {
+        :type => :refund,
+        :amount => 1,
+        :customer_profile_id => @customer_profile_id,
+        :customer_payment_profile_id => @customer_payment_profile_id,
+        :trans_id => response.params['direct_response']['transaction_id']
+      }
+    )
+    assert_instance_of Response, response
+    # You can't test refunds in TEST MODE.  If you authorize or capture
+    # a transaction, and the transaction is not yet settled by the payment
+    # gateway, you cannot issue a refund. You get an error message
+    # saying "The referenced transaction does not meet the criteria for issuing a credit.".
+    assert_failure response
+    assert_equal 'The referenced transaction does not meet the criteria for issuing a credit.', response.params['direct_response']['message']
+  end
+
+  def test_should_create_customer_profile_transaction_auth_capture_and_then_refund_using_profile_ids_request_with_empty_order
+    response = get_and_validate_auth_capture_response
+
+    assert response = @gateway.create_customer_profile_transaction(
+      :transaction => {
+        :type => :refund,
+        :amount => 1,
+        :customer_profile_id => @customer_profile_id,
+        :customer_payment_profile_id => @customer_payment_profile_id,
+        :trans_id => response.params['direct_response']['transaction_id'],
+        :order => {}
+      }
+    )
+    assert_instance_of Response, response
+    # You can't test refunds in TEST MODE.  If you authorize or capture
+    # a transaction, and the transaction is not yet settled by the payment
+    # gateway, you cannot issue a refund. You get an error message
+    # saying "The referenced transaction does not meet the criteria for issuing a credit.".
+    assert_failure response
+    assert_equal 'The referenced transaction does not meet the criteria for issuing a credit.', response.message
+  end
+
+  def test_should_create_customer_profile_transaction_auth_capture_and_then_refund_using_masked_credit_card_request
+    response = get_and_validate_auth_capture_response
+
+    assert response = @gateway.create_customer_profile_transaction(
+      :transaction => {
+        :type => :refund,
+        :amount => 1,
+        :credit_card_number_masked => 'XXXX4242',
+        :trans_id => response.params['direct_response']['transaction_id']
+      }
+    )
+    assert_instance_of Response, response
+    # You can't test refunds in TEST MODE.  If you authorize or capture
+    # a transaction, and the transaction is not yet settled by the payment
+    # gateway, you cannot issue a refund. You get an error message
+    # saying "The referenced transaction does not meet the criteria for issuing a credit.".
+    assert_failure response
+    assert_equal 'The referenced transaction does not meet the criteria for issuing a credit.', response.params['direct_response']['message']
+  end
+
+  def test_should_create_customer_profile_transaction_auth_only_and_then_prior_auth_capture_request
+    response = get_and_validate_auth_only_response
+
+    assert response = @gateway.create_customer_profile_transaction(
+      :transaction => {
+        :type => :prior_auth_capture,
+        :trans_id => response.params['direct_response']['transaction_id'],
+        :amount => response.params['direct_response']['amount']
+      }
+    )
+    assert_instance_of Response, response
+    assert_success response
+    assert_equal response.authorization, response.params['direct_response']['transaction_id']
+    assert_equal 'This transaction has been approved.', response.params['direct_response']['message']
+    return response
+  end
+
+  def get_and_validate_customer_payment_profile_request_with_bank_account_response
+    payment_profile = @options[:profile].delete(:payment_profiles)
+    assert response = @gateway.create_customer_profile(@options)
+    @customer_profile_id = response.authorization
+
+    assert response = @gateway.get_customer_profile(:customer_profile_id => @customer_profile_id)
+    assert_nil response.params['profile']['payment_profiles']
+
+    assert response = @gateway.create_customer_payment_profile(
+      :customer_profile_id => @customer_profile_id,
+      :payment_profile => {
+        :customer_type => 'individual', # Optional
+        :bill_to => @address,
+        :payment => {
+          :bank_account => {
+            :account_type => :checking,
+            :name_on_account => 'John Doe',
+            :echeck_type => :ccd,
+            :bank_name => 'Bank of America',
+            :routing_number => '123456789',
+            :account_number => '12345678'
+          }
+        },
+        :drivers_license => {
+          :state => 'MD',
+          :number => '12345',
+          :date_of_birth => '1981-3-31'
+        },
+        :tax_id => '123456789'
+      }
+    )
+
+    assert response.test?
+    assert_success response
+    assert_nil response.authorization
+    assert @customer_payment_profile_id = response.params['customer_payment_profile_id']
+    assert @customer_payment_profile_id =~ /\d+/, "The customerPaymentProfileId should be numeric. It was #{@customer_payment_profile_id}"
+    return response
+  end
+
+  def get_and_validate_auth_capture_response
+    assert response = @gateway.create_customer_profile(@options)
+    @customer_profile_id = response.authorization
+
+    assert response = @gateway.get_customer_profile(:customer_profile_id => @customer_profile_id)
+    @customer_payment_profile_id = response.params['profile']['payment_profiles']['customer_payment_profile_id']
+
+    key = (Time.now.to_f * 1000000).to_i.to_s
+
+    assert response = @gateway.create_customer_profile_transaction(
+      :transaction => {
+        :customer_profile_id => @customer_profile_id,
+        :customer_payment_profile_id => @customer_payment_profile_id,
+        :type => :auth_capture,
+        :order => {
+          :invoice_number => key.to_s,
+          :description => "Test Order Description #{key.to_s}",
+          :purchase_order_number => key.to_s
+        },
+        :amount => @amount
+      }
+    )
+
+    assert response.test?
+    assert_success response
+    assert_equal response.authorization, response.params['direct_response']['transaction_id']
+    assert_equal "This transaction has been approved.", response.params['direct_response']['message']
+    assert response.params['direct_response']['approval_code'] =~ /\w{6}/
+    assert_equal "auth_capture", response.params['direct_response']['transaction_type']
+    assert_equal "100.00", response.params['direct_response']['amount']
+    assert_equal response.params['direct_response']['invoice_number'], key.to_s
+    assert_equal response.params['direct_response']['order_description'], "Test Order Description #{key.to_s}"
+    assert_equal response.params['direct_response']['purchase_order_number'], key.to_s
+    return response
+  end
+
+  def get_and_validate_auth_only_response
+    assert response = @gateway.create_customer_profile(@options)
+    @customer_profile_id = response.authorization
+
+    key = (Time.now.to_f * 1000000).to_i.to_s
+
+    assert response = @gateway.get_customer_profile(:customer_profile_id => @customer_profile_id)
+    @customer_payment_profile_id = response.params['profile']['payment_profiles']['customer_payment_profile_id']
+    assert response = @gateway.create_customer_profile_transaction(
+     :transaction => {
+       :customer_profile_id => @customer_profile_id,
+       :customer_payment_profile_id => @customer_payment_profile_id,
+       :type => :auth_only,
+       :order => {
+          :invoice_number => key.to_s,
+          :description => "Test Order Description #{key.to_s}",
+          :purchase_order_number => key.to_s
+        },
+       :amount => @amount
+     }
+    )
+
+    assert response.test?
+    assert_success response
+    assert_equal response.authorization, response.params['direct_response']['transaction_id']
+    assert response.params['direct_response']['approval_code'] =~ /\w{6}/
+    assert_equal "auth_only", response.params['direct_response']['transaction_type']
+    assert_equal "100.00", response.params['direct_response']['amount']
+
+    return response
+  end
+
+
 end

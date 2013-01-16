@@ -1,4 +1,3 @@
-# Author::    MoneySpyder, www.moneyspyder.co.uk
 require 'test_helper'
 
 class RemoteDataCashTest < Test::Unit::TestCase
@@ -13,7 +12,7 @@ class RemoteDataCashTest < Test::Unit::TestCase
       :year => Date.today.year + 2,              
       :first_name => 'Mark',      
       :last_name => 'McBride',
-      :type => :master,
+      :brand => :master,
       :verification_value => '547'
     )
 
@@ -23,7 +22,7 @@ class RemoteDataCashTest < Test::Unit::TestCase
       :year => Date.today.year + 2,              
       :first_name => 'Mark',      
       :last_name => 'McBride',
-      :type => :master,
+      :brand => :master,
       :verification_value => '547'
     )
 
@@ -33,7 +32,7 @@ class RemoteDataCashTest < Test::Unit::TestCase
       :year => Date.today.year + 2,              
       :first_name => 'Mark',      
       :last_name => 'McBride',
-      :type => :visa,
+      :brand => :visa,
       :verification_value => '444'
     )
 
@@ -43,7 +42,7 @@ class RemoteDataCashTest < Test::Unit::TestCase
       :number => '633499100000000004',
       :month => 3,
       :year => Date.today.year + 2,
-      :type => :solo,
+      :brand => :solo,
       :issue_number => 5,
       :start_month => 12,
       :start_year => 2006,
